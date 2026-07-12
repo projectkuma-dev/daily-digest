@@ -1,0 +1,3 @@
+anthropic>=0.80.0
+supabase>=2.10.0
+requests>=2.32.0
