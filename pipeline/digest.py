@@ -45,6 +45,24 @@ SEED_PROFILE = (
 )
 
 
+def supabase_client():
+    """Build the client from env, normalizing whatever URL form was pasted.
+
+    Accepts the bare project URL, a trailing slash, the /rest/v1 endpoint URL,
+    or even a dashboard URL (https://supabase.com/dashboard/project/<ref>) —
+    anything else yields PGRST125/connection errors that are hard to debug.
+    """
+    from urllib.parse import urlsplit
+
+    raw = os.environ["SUPABASE_URL"].strip()
+    parts = urlsplit(raw if "://" in raw else "https://" + raw)
+    host = parts.netloc
+    if host.endswith("supabase.com") and "/project/" in parts.path:
+        ref = parts.path.split("/project/")[1].split("/")[0]
+        host = f"{ref}.supabase.co"
+    return create_client(f"https://{host}", os.environ["SUPABASE_SERVICE_KEY"].strip())
+
+
 def get_pwa_url() -> str:
     url = os.environ.get("PWA_URL", "")
     if url:
@@ -311,8 +329,7 @@ def store_digest(sb, digest_date: str, digest: dict) -> None:
 
 
 def main(dry_run: bool = False) -> None:
-    # rstrip: a trailing slash in the URL secret makes PostgREST reject the path (PGRST125)
-    sb = None if dry_run else create_client(os.environ["SUPABASE_URL"].rstrip("/"), os.environ["SUPABASE_SERVICE_KEY"])
+    sb = None if dry_run else supabase_client()
     client = anthropic.Anthropic()
     digest_date = datetime.now(PACIFIC).date().isoformat()
 

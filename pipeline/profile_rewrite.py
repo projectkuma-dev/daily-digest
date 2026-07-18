@@ -14,7 +14,8 @@ from collections import defaultdict
 
 import anthropic
 import requests
-from supabase import create_client
+
+from digest import supabase_client
 
 MODEL = "claude-haiku-4-5"
 MAX_PROFILE_WORDS = 200
@@ -51,8 +52,7 @@ def load_tag_stats(sb) -> str:
 
 
 def main() -> None:
-    # rstrip: a trailing slash in the URL secret makes PostgREST reject the path (PGRST125)
-    sb = create_client(os.environ["SUPABASE_URL"].rstrip("/"), os.environ["SUPABASE_SERVICE_KEY"])
+    sb = supabase_client()
     client = anthropic.Anthropic()
 
     current = sb.table("interest_profile").select("profile_text").eq("id", 1).single().execute()
