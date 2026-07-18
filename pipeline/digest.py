@@ -1,8 +1,9 @@
 """Daily digest curation pipeline.
 
-Fetches the interest profile and recent feedback from Supabase, asks Claude
-(with web search) to curate a news/weather/finance digest as structured JSON,
-validates it, stores it in Supabase, and sends an ntfy push notification.
+Gathers material from free sources (RSS news, NWS weather, Yahoo finance —
+see sources.py), fetches the interest profile and recent feedback from
+Supabase, asks Claude to curate a digest as structured JSON from that material
+only, validates it, stores it in Supabase, and sends an ntfy push.
 
 Env vars: ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, NTFY_TOPIC,
 optionally PWA_URL (defaults to https://<owner>.github.io/<repo>/ in Actions).
@@ -21,13 +22,14 @@ import anthropic
 import requests
 from supabase import create_client
 
+from sources import gather_material
+
 MODEL = "claude-haiku-4-5"
-MAX_TOKENS = 16000
+MAX_TOKENS = 8000
 WORD_BUDGET = 1300
 # Word-budget tolerance: a slightly-long digest still ships after the retry;
 # failing the whole morning run over a few dozen words is worse than 1350 words.
 WORD_BUDGET_HARD_CAP = 1500
-MAX_CONTINUATIONS = 5  # pause_turn resume limit for the server-side search loop
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
@@ -88,18 +90,18 @@ def load_context(sb):
 def build_system_prompt(digest_date: str, profile_text: str, feedback_summary: str) -> str:
     return f"""You are the curator of a personalized daily morning digest. Today's date is {digest_date} (US Pacific).
 
+The user message contains today's SOURCE MATERIAL: news headlines from RSS feeds, a National Weather Service forecast, and market quotes. Curate ONLY from that material. Never invent stories, facts, numbers, or URLs.
+
 READER INTEREST PROFILE:
 {profile_text}
 
 READER FEEDBACK, LAST 30 DAYS (tag: relevant / not relevant counts — weight topics accordingly; favor tags with high relevant counts, avoid tags with high not-relevant counts):
 {feedback_summary}
 
-Use web search to find CURRENT information published within the last 24 hours wherever possible.
-
 CONTENT REQUIREMENTS:
-- news: 4-6 items. Prioritize national/world headlines, defense/DoD and defense-tech news, AI industry news.
-- weather: exactly 1 item. Today's forecast for San Luis Obispo, CA — high/low, precipitation, wind, and a one-line run/hike conditions callout.
-- finance: 2-3 items. Prior close and pre-market for S&P 500/Nasdaq/Dow; anything notable on Boeing (BA), broad index ETFs, Fed/macro. Facts only, no investment advice.
+- news: select the 4-6 items most relevant to the profile and feedback. Prioritize national/world headlines, defense/DoD and defense-tech news, AI industry news. Merge duplicate coverage of the same story into one item citing both sources.
+- weather: exactly 1 item from the NWS forecast — high/low, precipitation, wind, and a one-line run/hike conditions callout.
+- finance: 2-3 items from the market quotes (plus any market-moving headlines in the news material). Report prior close and the latest (pre-market) level with percent moves; note anything notable on Boeing (BA), broad index ETFs, Fed/macro. Facts only, no investment advice.
 
 VOICE: Concise, declarative sentences. No em dashes. Hard cap {WORD_BUDGET} words total across all summaries, details, and the bottom line (a 7-minute read or less).
 
@@ -121,8 +123,42 @@ OUTPUT FORMAT — respond ONLY with a single JSON object, no preamble, no markdo
 
 RULES FOR ITEMS:
 - position numbers each item within its section, starting at 1.
-- Every item must include at least 1 source with a real URL from your web search results.
+- Every item must include at least 1 source, using URLs copied exactly from the source material (article URL for news, the NWS forecast URL for weather, the Yahoo Finance quote URLs for finance).
 - Every item must have 2-3 lowercase-kebab-case topic tags (e.g. "ai-policy", "defense-tech", "fed-policy"). Reuse tags consistently across days so feedback accumulates per topic."""
+
+
+def build_material_message(material: dict, digest_date: str) -> str:
+    lines = [f"SOURCE MATERIAL for {digest_date}:", "", "=== NEWS (RSS, last 36 hours) ==="]
+    for i, item in enumerate(material["news"], 1):
+        lines.append(f"{i}. [{item['source']}] {item['title']}")
+        if item.get("snippet"):
+            lines.append(f"   {item['snippet']}")
+        lines.append(f"   URL: {item['url']}")
+
+    lines.append("")
+    lines.append("=== WEATHER (National Weather Service) ===")
+    weather = material.get("weather")
+    if weather:
+        lines.append(f"Location: {weather['location']}  |  Source URL: {weather['source_url']}")
+        for p in weather["periods"]:
+            precip = f", precip {p['precip_chance']}%" if p.get("precip_chance") is not None else ""
+            lines.append(f"- {p['name']}: {p['temperature']}, wind {p['wind']}{precip}. {p['forecast']}")
+    else:
+        lines.append("Weather data unavailable today; write the weather item saying the forecast could not be fetched, source URL https://forecast.weather.gov/")
+
+    lines.append("")
+    lines.append("=== MARKET QUOTES (Yahoo Finance; 'latest' is pre-market at digest time) ===")
+    for q in material.get("finance", []):
+        change = f" ({q['change_pct_vs_prev_close']:+.2f}%)" if q.get("change_pct_vs_prev_close") is not None else ""
+        lines.append(
+            f"- {q['label']} [{q['symbol']}]: prev close {q['previous_close']}, latest {q['latest_price']}{change}  |  Source URL: {q['source_url']}"
+        )
+    if not material.get("finance"):
+        lines.append("Quotes unavailable today; base finance items only on market headlines in the news material.")
+
+    lines.append("")
+    lines.append("Generate the daily digest JSON now.")
+    return "\n".join(lines)
 
 
 def extract_text(response) -> str:
@@ -192,31 +228,12 @@ def validate_digest(digest: dict) -> list[str]:
     return problems
 
 
-def run_curation(client, system_prompt: str, messages: list) -> "anthropic.types.Message":
-    """Call Claude with web search enabled, resuming pause_turn as needed."""
-    # Haiku 4.5 supports the basic web search variant only (the _20260209
-    # dynamic-filtering variant requires 4.6+ models).
-    tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 15}]
-    response = None
-    for _ in range(MAX_CONTINUATIONS + 1):
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=system_prompt,
-            tools=tools,
-            messages=messages,
-        )
-        if response.stop_reason != "pause_turn":
-            return response
-        # Server-side search loop paused; append the partial turn and resume.
-        messages = messages + [{"role": "assistant", "content": response.content}]
-    return response
-
-
-def curate(client, system_prompt: str, digest_date: str) -> dict:
+def curate(client, system_prompt: str, material_message: str) -> dict:
     """Curate the digest; on invalid output, retry once with the problem list."""
-    messages = [{"role": "user", "content": f"Generate the daily digest for {digest_date}."}]
-    response = run_curation(client, system_prompt, messages)
+    messages = [{"role": "user", "content": material_message}]
+    response = client.messages.create(
+        model=MODEL, max_tokens=MAX_TOKENS, system=system_prompt, messages=messages
+    )
     text = extract_text(response)
 
     try:
@@ -228,7 +245,7 @@ def curate(client, system_prompt: str, digest_date: str) -> dict:
     if not problems:
         return digest
 
-    print(f"Digest invalid, retrying once. Problems:\n- " + "\n- ".join(problems))
+    print("Digest invalid, retrying once. Problems:\n- " + "\n- ".join(problems))
     retry_messages = messages + [
         {"role": "assistant", "content": response.content},
         {
@@ -236,12 +253,13 @@ def curate(client, system_prompt: str, digest_date: str) -> dict:
             "content": (
                 "Your JSON output had these problems:\n- "
                 + "\n- ".join(problems)
-                + "\n\nFix them and respond again with ONLY the corrected JSON object. "
-                "Do not run more web searches; work from what you already found."
+                + "\n\nFix them and respond again with ONLY the corrected JSON object."
             ),
         },
     ]
-    response = run_curation(client, system_prompt, retry_messages)
+    response = client.messages.create(
+        model=MODEL, max_tokens=MAX_TOKENS, system=system_prompt, messages=retry_messages
+    )
     digest = parse_digest_json(extract_text(response))
     problems = validate_digest(digest)
 
@@ -286,8 +304,19 @@ def main() -> None:
     client = anthropic.Anthropic()
     digest_date = datetime.now(PACIFIC).date().isoformat()
 
+    material = gather_material()
+    n_news = len(material["news"])
+    print(
+        f"Material gathered: {n_news} news items, "
+        f"weather {'OK' if material['weather'] else 'UNAVAILABLE'}, "
+        f"{len(material['finance'])} quotes."
+    )
+    if n_news < 10:
+        raise RuntimeError(f"Only {n_news} news items fetched; feeds look broken, aborting")
+
     profile_text, feedback_summary = load_context(sb)
     system_prompt = build_system_prompt(digest_date, profile_text, feedback_summary)
+    material_message = build_material_message(material, digest_date)
 
     # Acceptance criterion: the prompt context must be demonstrably logged.
     print("=" * 60)
@@ -295,7 +324,7 @@ def main() -> None:
     print(system_prompt)
     print("=" * 60)
 
-    digest = curate(client, system_prompt, digest_date)
+    digest = curate(client, system_prompt, material_message)
     words = count_words(digest)
     print(f"Digest curated: {len(digest['items'])} items, {words} words.")
 

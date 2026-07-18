@@ -1,6 +1,6 @@
 # Daily Digest
 
-Personalized daily digest system. A GitHub Actions cron runs a Python pipeline each weekday morning: Claude (with web search) curates news/weather/finance into structured JSON, stores it in Supabase, and pings your phone via ntfy. A React PWA on GitHub Pages renders the digest; swiping cards right/left records relevance feedback that is injected into future curation prompts, so the digest self-tunes. A second weekly job rewrites the interest profile from accumulated feedback.
+Personalized daily digest system. A GitHub Actions cron runs a Python pipeline each weekday morning: it gathers free source material (curated RSS feeds, the National Weather Service forecast for San Luis Obispo, Yahoo Finance quotes), then Claude curates it into structured news/weather/finance JSON, stores it in Supabase, and pings your phone via ntfy. A React PWA on GitHub Pages renders the digest; swiping cards right/left records relevance feedback that is injected into future curation prompts, so the digest self-tunes. A second weekly job rewrites the interest profile from accumulated feedback.
 
 ```
 /pipeline   Python curation pipeline (digest.py, profile_rewrite.py)
@@ -50,6 +50,7 @@ Optional: set `PWA_URL` as a repository **variable** if your Pages URL differs f
 
 ## Manual test steps
 
+- **Sources:** `python pipeline/sources.py` prints a self-test — news counts per feed, the NWS forecast, and quotes — without calling Claude or Supabase.
 - **Pipeline:** dispatch *Daily digest*; confirm ntfy push + stored digest + prompt context in the log.
 - **Failure path:** temporarily set `ANTHROPIC_API_KEY` to a bad value, dispatch again; confirm you get a high-priority "Daily Digest failed" ntfy notification. Restore the key.
 - **App:** open the PWA; confirm sections render with working source links on every item; total read is under 1,300 words.
@@ -66,19 +67,19 @@ Optional: set `PWA_URL` as a repository **variable** if your Pages URL differs f
 
 ## Estimated monthly API cost
 
-Model: `claude-haiku-4-5` ($1 / $5 per MTok input/output; web search $10 per 1,000 searches). Note the Anthropic API is metered pay-per-use, billed separately from a Claude.ai subscription.
+Model: `claude-haiku-4-5` ($1 / $5 per MTok input/output). All source data (RSS, NWS, Yahoo Finance) is free, so the only metered cost is Claude tokens. Note the Anthropic API is pay-per-use, billed separately from a Claude.ai subscription.
 
 | Job | Runs/mo | Per run | Monthly |
 |---|---|---|---|
-| Digest: web search (~10–15 searches, capped at 15) | ~22 | $0.10–0.15 | $2.20–3.30 |
-| Digest: tokens (~40–80K in incl. search results, ~3–6K out) | ~22 | $0.06–0.11 | $1.30–2.40 |
+| Digest curation (~10K in: source material + profile; ~3–5K out) | ~22 | ~$0.03 | ~$0.65 |
 | Profile rewrite (~2K in, ~500 out) | ~4 | <$0.01 | <$0.05 |
 
-**Total: roughly $3.50–6/month**, dominated by web search. Supabase free tier and ntfy.sh are $0; GitHub Actions usage is well within the free allowance for public or personal repos. If curation quality feels thin on Haiku, switching back to `claude-sonnet-4-6` is a one-line change in each pipeline script (roughly +$5/month, and it re-enables the newer web-search variant — see Implementation notes).
+**Total: roughly $0.70–1/month.** Supabase free tier, ntfy.sh, NWS, RSS, and Yahoo quotes are $0; GitHub Actions usage is well within the free allowance. For a true $0/month option that runs curation on a Claude subscription instead of the metered API, see [docs/v2-path2-zero-cost.md](docs/v2-path2-zero-cost.md).
 
 ## Implementation notes
 
-- The pipeline uses the basic `web_search_20250305` tool variant because `claude-haiku-4-5` does not support the newer `web_search_20260209` (dynamic filtering) variant — that one requires 4.6+ models. If you upgrade the model to `claude-sonnet-4-6`, switch the tool type in `digest.py` to `web_search_20260209` at the same time.
+- Curation is grounded in fetched material, not web search: `pipeline/sources.py` pulls RSS headlines (feed list is a constant at the top — edit it to change coverage), the NWS forecast, and Yahoo quotes, and the prompt forbids inventing stories or URLs. A dead feed just shrinks the material; the run aborts only if fewer than 10 news items arrive.
+- If curation quality feels thin on Haiku, switching to `claude-sonnet-4-6` is a one-line `MODEL` change in each pipeline script (roughly +$2/month at these token volumes).
 - `feedback.item_id` has a unique constraint so re-swipes upsert instead of duplicating.
 - The digest upserts on `digest_date`, so re-running the workflow on the same day replaces that day's digest instead of failing.
 - If the digest is structurally invalid, the pipeline retries once with the specific problems; a word count slightly over budget (≤1,500) ships with a warning rather than failing the morning run.
