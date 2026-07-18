@@ -51,7 +51,8 @@ def load_tag_stats(sb) -> str:
 
 
 def main() -> None:
-    sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+    # rstrip: a trailing slash in the URL secret makes PostgREST reject the path (PGRST125)
+    sb = create_client(os.environ["SUPABASE_URL"].rstrip("/"), os.environ["SUPABASE_SERVICE_KEY"])
     client = anthropic.Anthropic()
 
     current = sb.table("interest_profile").select("profile_text").eq("id", 1).single().execute()

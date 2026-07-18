@@ -311,7 +311,8 @@ def store_digest(sb, digest_date: str, digest: dict) -> None:
 
 
 def main(dry_run: bool = False) -> None:
-    sb = None if dry_run else create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+    # rstrip: a trailing slash in the URL secret makes PostgREST reject the path (PGRST125)
+    sb = None if dry_run else create_client(os.environ["SUPABASE_URL"].rstrip("/"), os.environ["SUPABASE_SERVICE_KEY"])
     client = anthropic.Anthropic()
     digest_date = datetime.now(PACIFIC).date().isoformat()
 
