@@ -7,6 +7,10 @@ only, validates it, stores it in Supabase, and sends an ntfy push.
 
 Env vars: ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, NTFY_TOPIC,
 optionally PWA_URL (defaults to https://<owner>.github.io/<repo>/ in Actions).
+
+Dry run (needs only ANTHROPIC_API_KEY — no Supabase, no ntfy):
+    python pipeline/digest.py --dry-run
+Uses the seed interest profile, curates from live sources, prints the digest.
 """
 
 import json
@@ -32,6 +36,13 @@ WORD_BUDGET = 1300
 WORD_BUDGET_HARD_CAP = 1500
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
+
+# Mirrors the seed row in supabase/schema.sql; used by --dry-run only.
+SEED_PROFILE = (
+    "Defense and DoD technology, military logistics and C2 (USTRANSCOM, sealift, "
+    "Palantir ecosystem), AI industry and AI policy, enterprise software, macro "
+    "markets and Fed policy, Boeing. Low interest: celebrity news, sports, crypto."
+)
 
 
 def get_pwa_url() -> str:
@@ -299,8 +310,8 @@ def store_digest(sb, digest_date: str, digest: dict) -> None:
     print(f"Stored digest {digest_id} for {digest_date} with {len(items)} items.")
 
 
-def main() -> None:
-    sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+def main(dry_run: bool = False) -> None:
+    sb = None if dry_run else create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
     client = anthropic.Anthropic()
     digest_date = datetime.now(PACIFIC).date().isoformat()
 
@@ -314,7 +325,10 @@ def main() -> None:
     if n_news < 10:
         raise RuntimeError(f"Only {n_news} news items fetched; feeds look broken, aborting")
 
-    profile_text, feedback_summary = load_context(sb)
+    if dry_run:
+        profile_text, feedback_summary = SEED_PROFILE, "No feedback collected yet."
+    else:
+        profile_text, feedback_summary = load_context(sb)
     system_prompt = build_system_prompt(digest_date, profile_text, feedback_summary)
     material_message = build_material_message(material, digest_date)
 
@@ -328,6 +342,11 @@ def main() -> None:
     words = count_words(digest)
     print(f"Digest curated: {len(digest['items'])} items, {words} words.")
 
+    if dry_run:
+        print("\nDRY RUN — digest not stored, no notification sent:\n")
+        print(json.dumps(digest, indent=2))
+        return
+
     store_digest(sb, digest_date, digest)
     notify(
         os.environ.get("NTFY_TOPIC", ""),
@@ -339,14 +358,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    dry = "--dry-run" in sys.argv
     try:
-        main()
+        main(dry_run=dry)
     except Exception:
         traceback.print_exc()
-        notify(
-            os.environ.get("NTFY_TOPIC", ""),
-            title="Daily Digest failed",
-            body=f"Pipeline error: {sys.exc_info()[1]}",
-            priority="high",
-        )
+        if not dry:
+            notify(
+                os.environ.get("NTFY_TOPIC", ""),
+                title="Daily Digest failed",
+                body=f"Pipeline error: {sys.exc_info()[1]}",
+                priority="high",
+            )
         sys.exit(1)

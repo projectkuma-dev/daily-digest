@@ -51,6 +51,7 @@ Optional: set `PWA_URL` as a repository **variable** if your Pages URL differs f
 ## Manual test steps
 
 - **Sources:** `python pipeline/sources.py` prints a self-test — news counts per feed, the NWS forecast, and quotes — without calling Claude or Supabase.
+- **Curation dry run:** with just `ANTHROPIC_API_KEY` set (no Supabase needed), `python pipeline/digest.py --dry-run` curates a real digest from live sources using the seed profile and prints the JSON without storing or notifying. Costs ~$0.03. Use this to judge Haiku's curation quality before any infrastructure setup.
 - **Pipeline:** dispatch *Daily digest*; confirm ntfy push + stored digest + prompt context in the log.
 - **Failure path:** temporarily set `ANTHROPIC_API_KEY` to a bad value, dispatch again; confirm you get a high-priority "Daily Digest failed" ntfy notification. Restore the key.
 - **App:** open the PWA; confirm sections render with working source links on every item; total read is under 1,300 words.
