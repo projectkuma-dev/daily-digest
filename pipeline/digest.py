@@ -21,7 +21,7 @@ import anthropic
 import requests
 from supabase import create_client
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
 WORD_BUDGET = 1300
 # Word-budget tolerance: a slightly-long digest still ships after the retry;
@@ -194,13 +194,14 @@ def validate_digest(digest: dict) -> list[str]:
 
 def run_curation(client, system_prompt: str, messages: list) -> "anthropic.types.Message":
     """Call Claude with web search enabled, resuming pause_turn as needed."""
-    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 15}]
+    # Haiku 4.5 supports the basic web search variant only (the _20260209
+    # dynamic-filtering variant requires 4.6+ models).
+    tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 15}]
     response = None
     for _ in range(MAX_CONTINUATIONS + 1):
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            thinking={"type": "adaptive"},
             system=system_prompt,
             tools=tools,
             messages=messages,

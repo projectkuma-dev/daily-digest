@@ -16,7 +16,7 @@ import anthropic
 import requests
 from supabase import create_client
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5"
 MAX_PROFILE_WORDS = 200
 
 
@@ -81,7 +81,6 @@ Rules:
     response = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        thinking={"type": "adaptive"},
         messages=[{"role": "user", "content": prompt}],
     )
     new_profile = "".join(b.text for b in response.content if b.type == "text").strip().strip('"')

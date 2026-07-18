@@ -11,11 +11,13 @@ Personalized daily digest system. A GitHub Actions cron runs a Python pipeline e
 
 ## Setup (in this order)
 
-### 1. Supabase
+### 1. Supabase (shared with Running Ideas)
 
-1. Create a project at [supabase.com](https://supabase.com) (free tier is fine).
-2. Open **SQL Editor**, paste the contents of [`supabase/schema.sql`](supabase/schema.sql), run it. This creates the tables, enables RLS, and seeds the interest profile.
-3. From **Project Settings → API**, note three values: the **Project URL**, the **anon public key**, and the **service_role key** (keep this one secret).
+This app shares the **Running Ideas** Supabase project — the free tier allows 2 projects and both slots are used (running-ideas, finance-app). The tables coexist cleanly: running-ideas owns `ideas_history`; this app owns `digests`, `digest_items`, `feedback`, `interest_profile`, `profile_history`. RLS is per-table, so neither app affects the other. Bonus: the weekday digest cron keeps the shared project from being paused for inactivity.
+
+1. Open the **running-ideas** project in the Supabase dashboard.
+2. In **SQL Editor**, paste the contents of [`supabase/schema.sql`](supabase/schema.sql), run it. This creates the digest tables, enables RLS, and seeds the interest profile.
+3. From **Project Settings → API**, note three values: the **Project URL**, the **anon public key**, and the **service_role key** (keep this one secret — note it can access running-ideas tables too, since it belongs to the shared project).
 
 ### 2. ntfy (Android push)
 
@@ -64,19 +66,19 @@ Optional: set `PWA_URL` as a repository **variable** if your Pages URL differs f
 
 ## Estimated monthly API cost
 
-Model: `claude-sonnet-4-6` ($3 / $15 per MTok input/output; web search $10 per 1,000 searches).
+Model: `claude-haiku-4-5` ($1 / $5 per MTok input/output; web search $10 per 1,000 searches). Note the Anthropic API is metered pay-per-use, billed separately from a Claude.ai subscription.
 
 | Job | Runs/mo | Per run | Monthly |
 |---|---|---|---|
 | Digest: web search (~10–15 searches, capped at 15) | ~22 | $0.10–0.15 | $2.20–3.30 |
-| Digest: tokens (~40–80K in incl. search results, ~4–8K out incl. thinking) | ~22 | $0.18–0.36 | $4.00–8.00 |
-| Profile rewrite (~2K in, ~500 out) | ~4 | <$0.02 | <$0.10 |
+| Digest: tokens (~40–80K in incl. search results, ~3–6K out) | ~22 | $0.06–0.11 | $1.30–2.40 |
+| Profile rewrite (~2K in, ~500 out) | ~4 | <$0.01 | <$0.05 |
 
-**Total: roughly $6–11/month.** Supabase free tier and ntfy.sh are $0; GitHub Actions usage is well within the free allowance for public or personal repos.
+**Total: roughly $3.50–6/month**, dominated by web search. Supabase free tier and ntfy.sh are $0; GitHub Actions usage is well within the free allowance for public or personal repos. If curation quality feels thin on Haiku, switching back to `claude-sonnet-4-6` is a one-line change in each pipeline script (roughly +$5/month, and it re-enables the newer web-search variant — see Implementation notes).
 
 ## Implementation notes
 
-- The pipeline uses the `web_search_20260209` tool variant (the current one for `claude-sonnet-4-6`, with dynamic result filtering) rather than the older `web_search_20250305` named in the original work instructions.
+- The pipeline uses the basic `web_search_20250305` tool variant because `claude-haiku-4-5` does not support the newer `web_search_20260209` (dynamic filtering) variant — that one requires 4.6+ models. If you upgrade the model to `claude-sonnet-4-6`, switch the tool type in `digest.py` to `web_search_20260209` at the same time.
 - `feedback.item_id` has a unique constraint so re-swipes upsert instead of duplicating.
 - The digest upserts on `digest_date`, so re-running the workflow on the same day replaces that day's digest instead of failing.
 - If the digest is structurally invalid, the pipeline retries once with the specific problems; a word count slightly over budget (≤1,500) ships with a warning rather than failing the morning run.
