@@ -7,32 +7,69 @@ Run directly for a self-test: python pipeline/sources.py
 """
 
 import concurrent.futures
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 
 import feedparser
 import requests
 
-# Curated feed list. Edit freely; the curator only sees what these provide.
+# feedparser has no timeout parameter and blocks indefinitely on a hung host,
+# which would stall the whole morning run. This is the only way to bound it.
+socket.setdefaulttimeout(15)
+
+# Curated feed list, grouped by category. The curator only ever sees what these
+# provide, so the category balance here IS the digest's balance. Feeds are
+# presented to the model grouped by category so it can allocate slots across
+# them rather than picking whatever the loudest category supplied.
+# All entries verified live 2026-07-24.
 NEWS_FEEDS = [
-    # National / world
-    ("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-    ("NPR News", "https://feeds.npr.org/1001/rss.xml"),
-    # Defense / DoD / defense-tech
-    ("Defense News", "https://www.defensenews.com/arc/outboundfeeds/rss/"),
-    ("Breaking Defense", "https://breakingdefense.com/feed/"),
-    ("DefenseScoop", "https://defensescoop.com/feed/"),
-    ("The War Zone", "https://www.twz.com/feed"),
-    # AI industry
-    ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/"),
-    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
-    ("The Verge AI", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    # Markets context
-    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    # World and US national, including politics and policy
+    ("world", "BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("world", "NPR News", "https://feeds.npr.org/1001/rss.xml"),
+    ("world", "Guardian World", "https://www.theguardian.com/world/rss"),
+    # Business, economy, markets
+    ("business", "MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("business", "Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ("business", "Guardian Business", "https://www.theguardian.com/uk/business/rss"),
+    # Technology: products, engineering, AI industry
+    ("tech", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
+    ("tech", "The Verge", "https://www.theverge.com/rss/index.xml"),
+    ("tech", "TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/"),
+    # Science and space
+    ("science", "Phys.org", "https://phys.org/rss-feed/"),
+    ("science", "Space.com", "https://www.space.com/feeds/all"),
+    ("science", "NASA", "https://www.nasa.gov/rss/dyn/breaking_news.rss"),
+    # Climate and energy
+    ("climate", "Grist", "https://grist.org/feed/"),
+    ("climate", "Ars Science", "https://feeds.arstechnica.com/arstechnica/science"),
+    # Fitness, running, longevity
+    ("health", "Runner's World", "https://www.runnersworld.com/rss/all.xml/"),
+    ("health", "NYT Well", "https://rss.nytimes.com/services/xml/rss/nyt/Well.xml"),
+    # Local: SLO county, Central Coast, California statewide
+    ("local", "KSBY (SLO County)", "https://www.ksby.com/news/local-news.rss"),
+    ("local", "LA Times California", "https://www.latimes.com/california/rss2.0.xml"),
+    ("local", "CalMatters", "https://calmatters.org/feed/"),
+    # Defense and DoD (trimmed from 4 feeds to 2 — one slot per digest, major stories only)
+    ("defense", "Breaking Defense", "https://breakingdefense.com/feed/"),
+    ("defense", "DefenseScoop", "https://defensescoop.com/feed/"),
 ]
 
+# Order categories appear in the material message shown to the curator.
+CATEGORY_ORDER = ["world", "business", "tech", "science", "climate", "health", "local", "defense"]
+CATEGORY_LABELS = {
+    "world": "WORLD & US NATIONAL",
+    "business": "BUSINESS, ECONOMY & MARKETS",
+    "tech": "TECHNOLOGY & AI INDUSTRY",
+    "science": "SCIENCE & SPACE",
+    "climate": "CLIMATE & ENERGY",
+    "health": "FITNESS, RUNNING & HEALTH",
+    "local": "LOCAL (SLO COUNTY & CALIFORNIA)",
+    "defense": "DEFENSE & DOD (at most one item, major stories only)",
+}
+
 MAX_AGE_HOURS = 36
-MAX_PER_FEED = 10
+MAX_PER_FEED = 6
 SNIPPET_CHARS = 300
 
 # San Luis Obispo, CA
@@ -55,11 +92,11 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
 
-def _fetch_one_feed(name: str, url: str) -> list[dict]:
+def _fetch_one_feed(category: str, name: str, url: str) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
     parsed = feedparser.parse(url)
     items = []
-    for entry in parsed.entries[: MAX_PER_FEED * 2]:
+    for entry in parsed.entries[: MAX_PER_FEED * 3]:
         published = None
         for key in ("published_parsed", "updated_parsed"):
             t = entry.get(key)
@@ -74,6 +111,7 @@ def _fetch_one_feed(name: str, url: str) -> list[dict]:
             continue
         items.append(
             {
+                "category": category,
                 "source": name,
                 "title": title,
                 "url": link,
@@ -89,8 +127,8 @@ def _fetch_one_feed(name: str, url: str) -> list[dict]:
 def fetch_news() -> list[dict]:
     """Recent entries from all feeds, fetched in parallel; dead feeds skipped."""
     items = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_fetch_one_feed, n, u): n for n, u in NEWS_FEEDS}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_one_feed, c, n, u): n for c, n, u in NEWS_FEEDS}
         for future in concurrent.futures.as_completed(futures):
             try:
                 items.extend(future.result())
@@ -160,12 +198,18 @@ def gather_material() -> dict:
 
 if __name__ == "__main__":
     material = gather_material()
-    by_source = {}
+    by_cat: dict[str, dict[str, int]] = {}
     for item in material["news"]:
-        by_source[item["source"]] = by_source.get(item["source"], 0) + 1
-    print(f"\nNews: {len(material['news'])} items from {len(by_source)} feeds:")
-    for source, n in sorted(by_source.items()):
-        print(f"  {source}: {n}")
+        by_cat.setdefault(item["category"], {})
+        by_cat[item["category"]][item["source"]] = by_cat[item["category"]].get(item["source"], 0) + 1
+    print(f"\nNews: {len(material['news'])} items")
+    for cat in CATEGORY_ORDER:
+        sources = by_cat.get(cat, {})
+        total = sum(sources.values())
+        flag = "  <-- EMPTY" if total == 0 else ""
+        print(f"  [{cat}] {total} items{flag}")
+        for source, n in sorted(sources.items()):
+            print(f"      {source}: {n}")
     w = material["weather"]
     print(f"Weather: {'OK — ' + w['periods'][0]['name'] + ': ' + w['periods'][0]['forecast'][:80] if w else 'FAILED'}")
     print(f"Finance: {len(material['finance'])} quotes:")

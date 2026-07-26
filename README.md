@@ -72,14 +72,17 @@ Model: `claude-haiku-4-5` ($1 / $5 per MTok input/output). All source data (RSS,
 
 | Job | Runs/mo | Per run | Monthly |
 |---|---|---|---|
-| Digest curation (~10K in: source material + profile; ~3–5K out) | ~22 | ~$0.03 | ~$0.65 |
+| Digest curation (~13K in: source material + profile; ~4–6K out) | ~22 | ~$0.04 | ~$0.90 |
 | Profile rewrite (~2K in, ~500 out) | ~4 | <$0.01 | <$0.05 |
 
 **Total: roughly $0.70–1/month.** Supabase free tier, ntfy.sh, NWS, RSS, and Yahoo quotes are $0; GitHub Actions usage is well within the free allowance. For a true $0/month option that runs curation on a Claude subscription instead of the metered API, see [docs/v2-path2-zero-cost.md](docs/v2-path2-zero-cost.md).
 
 ## Implementation notes
 
-- Curation is grounded in fetched material, not web search: `pipeline/sources.py` pulls RSS headlines (feed list is a constant at the top — edit it to change coverage), the NWS forecast, and Yahoo quotes, and the prompt forbids inventing stories or URLs. A dead feed just shrinks the material; the run aborts only if fewer than 10 news items arrive.
+- Curation is grounded in fetched material, not web search: `pipeline/sources.py` pulls RSS headlines, the NWS forecast, and Yahoo quotes, and the prompt forbids inventing stories or URLs. A dead feed just shrinks the material; the run aborts only if fewer than 10 news items arrive.
+- **Feeds are grouped into 8 categories** (`NEWS_FEEDS` in `pipeline/sources.py`) and presented to the curator category by category, so it allocates slots across them instead of picking whatever the loudest category supplied. **The category balance of the feed list is the digest's balance** — if you want more of something, add a feed for it; the curator can only pick from what it is given.
+- **Every digest carries one wildcard item** deliberately outside the interest profile, enforced by `validate_digest`. This is what keeps the feedback loop from slowly narrowing the digest to a single topic.
+- **The weekly rewrite is deliberately conservative.** It sees how often each tag was *served* alongside how it was swiped, because a rarely-shown topic collects few swipes regardless of interest. It may not delete a category, may not reframe one interest through another, and may only demote a topic with at least 4 swipes that are at least 70% negative. It also sends an ntfy notification whenever it changes the profile, so drift is visible. See the header comment in `pipeline/profile_rewrite.py` for the incident that motivated this.
 - If curation quality feels thin on Haiku, switching to `claude-sonnet-4-6` is a one-line `MODEL` change in each pipeline script (roughly +$2/month at these token volumes).
 - `feedback.item_id` has a unique constraint so re-swipes upsert instead of duplicating.
 - The digest upserts on `digest_date`, so re-running the workflow on the same day replaces that day's digest instead of failing.

@@ -26,23 +26,28 @@ import anthropic
 import requests
 from supabase import create_client
 
-from sources import gather_material
+from sources import CATEGORY_LABELS, CATEGORY_ORDER, gather_material
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 8000
 WORD_BUDGET = 1300
+NEWS_MIN, NEWS_MAX = 6, 8  # widened from 4-6 to cover the broader category spread
 # Word-budget tolerance: a slightly-long digest still ships after the retry;
 # failing the whole morning run over a few dozen words is worse than 1350 words.
 WORD_BUDGET_HARD_CAP = 1500
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-# Mirrors the seed row in supabase/schema.sql; used by --dry-run only.
-SEED_PROFILE = (
-    "Defense and DoD technology, military logistics and C2 (USTRANSCOM, sealift, "
-    "Palantir ecosystem), AI industry and AI policy, enterprise software, macro "
-    "markets and Fed policy, Boeing. Low interest: celebrity news, sports, crypto."
-)
+# Mirrors supabase/update_profile_2026-07-25.sql; used by --dry-run only.
+SEED_PROFILE = """General-awareness reader who wants breadth across many topics rather than depth in any single one.
+
+Core interests, roughly equal weight: world and US national news, including politics and policy; business and the economy, especially macro conditions, Federal Reserve policy, market moves, and major company and industry news; technology products, software engineering, and AI industry developments; science, especially space and astronomy; climate and energy, including the energy transition and power markets; and fitness, running, and longevity research.
+
+Local coverage is wanted: San Luis Obispo county and the Central Coast, plus California statewide issues such as housing, water, wildfire, and the state economy.
+
+Defense and DoD topics are professionally relevant, particularly military logistics, command and control, USTRANSCOM, sealift, and defense enterprise software. Defense should nonetheless be a small part of each digest, appearing only for genuinely significant stories rather than routine procurement or incremental program news.
+
+Low interest: celebrity news, spectator sports, cryptocurrency."""
 
 
 def supabase_client():
@@ -128,11 +133,19 @@ READER FEEDBACK, LAST 30 DAYS (tag: relevant / not relevant counts — weight to
 {feedback_summary}
 
 CONTENT REQUIREMENTS:
-- news: select the 4-6 items most relevant to the profile and feedback. Prioritize national/world headlines, defense/DoD and defense-tech news, AI industry news. Merge duplicate coverage of the same story into one item citing both sources.
+- news: {NEWS_MIN}-{NEWS_MAX} items chosen for BREADTH across categories, not depth in any one. The source material is grouped by category to make this easy. Target allocation per digest:
+  * 1-2 world and US national (including politics and policy)
+  * 1-2 business and economy (macro conditions, Fed policy, markets, major company or industry news)
+  * 1 technology (products, software engineering, or the AI industry)
+  * 1 science, space, climate, energy, or fitness and longevity research
+  * 1 local (San Luis Obispo county, the Central Coast, or California statewide)
+  * AT MOST 1 defense or DoD item, and only when the story is genuinely significant. Routine procurement news, incremental program updates, and weapons-platform minutiae do not qualify. If nothing rises to that bar today, include no defense item at all.
+  * EXACTLY 1 wildcard: a genuinely interesting item that falls outside the interest profile entirely. Tag it "wildcard" plus one topic tag. Its whole purpose is variety, so do not use a defense, markets, or AI story for this slot.
+  Hard rules: never more than one defense item; never exceed the ranges above for a category. If a category has no strong material today, give its slot to a different category rather than forcing a weak item or doubling up on defense. Merge duplicate coverage of the same story into one item citing both sources.
 - weather: exactly 1 item from the NWS forecast — high/low, precipitation, wind, and a one-line run/hike conditions callout.
 - finance: 2-3 items from the market quotes (plus any market-moving headlines in the news material). Report prior close and the latest (pre-market) level with percent moves; note anything notable on Boeing (BA), broad index ETFs, Fed/macro. Facts only, no investment advice.
 
-VOICE: Concise, declarative sentences. No em dashes. Hard cap {WORD_BUDGET} words total across all summaries, details, and the bottom line (a 7-minute read or less).
+VOICE: Concise, declarative sentences. No em dashes. Keep each summary to 2-3 sentences and each detail to one short paragraph of roughly 60 words. Hard cap {WORD_BUDGET} words total across all summaries, details, and the bottom line (a 7-minute read or less).
 
 OUTPUT FORMAT — respond ONLY with a single JSON object, no preamble, no markdown fences, matching exactly:
 {{
@@ -153,16 +166,36 @@ OUTPUT FORMAT — respond ONLY with a single JSON object, no preamble, no markdo
 RULES FOR ITEMS:
 - position numbers each item within its section, starting at 1.
 - Every item must include at least 1 source, using URLs copied exactly from the source material (article URL for news, the NWS forecast URL for weather, the Yahoo Finance quote URLs for finance).
-- Every item must have 2-3 lowercase-kebab-case topic tags (e.g. "ai-policy", "defense-tech", "fed-policy"). Reuse tags consistently across days so feedback accumulates per topic."""
+- Every item must have 2-3 lowercase-kebab-case topic tags (e.g. "ai-policy", "space", "fed-policy"). Reuse tags consistently across days so feedback accumulates per topic. Use category-level tags rather than hyper-specific ones, so counts build up over time.
+- The wildcard item must carry the literal tag "wildcard" plus one topic tag."""
 
 
 def build_material_message(material: dict, digest_date: str) -> str:
-    lines = [f"SOURCE MATERIAL for {digest_date}:", "", "=== NEWS (RSS, last 36 hours) ==="]
-    for i, item in enumerate(material["news"], 1):
-        lines.append(f"{i}. [{item['source']}] {item['title']}")
-        if item.get("snippet"):
-            lines.append(f"   {item['snippet']}")
-        lines.append(f"   URL: {item['url']}")
+    lines = [
+        f"SOURCE MATERIAL for {digest_date}:",
+        "",
+        "NEWS (RSS, last 36 hours), grouped by category. Allocate your news slots across these",
+        "categories per the content requirements. A category with no items today simply has none;",
+        "give its slot to another category rather than over-filling from one group.",
+    ]
+    by_cat = defaultdict(list)
+    for item in material["news"]:
+        by_cat[item["category"]].append(item)
+
+    n = 0
+    for cat in CATEGORY_ORDER:
+        items = by_cat.get(cat, [])
+        lines.append("")
+        lines.append(f"=== {CATEGORY_LABELS[cat]} ({len(items)} items) ===")
+        if not items:
+            lines.append("(nothing in this category today)")
+            continue
+        for item in items:
+            n += 1
+            lines.append(f"{n}. [{item['source']}] {item['title']}")
+            if item.get("snippet"):
+                lines.append(f"   {item['snippet']}")
+            lines.append(f"   URL: {item['url']}")
 
     lines.append("")
     lines.append("=== WEATHER (National Weather Service) ===")
@@ -244,12 +277,20 @@ def validate_digest(digest: dict) -> list[str]:
         if not isinstance(tags, list) or not (2 <= len(tags) <= 3):
             problems.append(f"item {i} ({item.get('headline', '?')}): needs 2-3 tags")
 
-    if not (4 <= len(by_section["news"]) <= 6):
-        problems.append(f"news section has {len(by_section['news'])} items, needs 4-6")
+    if not (NEWS_MIN <= len(by_section["news"]) <= NEWS_MAX):
+        problems.append(
+            f"news section has {len(by_section['news'])} items, needs {NEWS_MIN}-{NEWS_MAX}"
+        )
     if len(by_section["weather"]) != 1:
         problems.append(f"weather section has {len(by_section['weather'])} items, needs exactly 1")
     if not (2 <= len(by_section["finance"]) <= 3):
         problems.append(f"finance section has {len(by_section['finance'])} items, needs 2-3")
+
+    wildcards = [i for i in by_section["news"] if "wildcard" in (i.get("tags") or [])]
+    if len(wildcards) != 1:
+        problems.append(
+            f"{len(wildcards)} items tagged 'wildcard', needs exactly 1 (an item outside the interest profile)"
+        )
 
     words = count_words(digest)
     if words > WORD_BUDGET_HARD_CAP:
