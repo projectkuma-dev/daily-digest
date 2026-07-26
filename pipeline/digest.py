@@ -166,8 +166,19 @@ OUTPUT FORMAT — respond ONLY with a single JSON object, no preamble, no markdo
 RULES FOR ITEMS:
 - position numbers each item within its section, starting at 1.
 - Every item must include at least 1 source, using URLs copied exactly from the source material (article URL for news, the NWS forecast URL for weather, the Yahoo Finance quote URLs for finance).
-- Every item must have 2-3 lowercase-kebab-case topic tags (e.g. "ai-policy", "space", "fed-policy"). Reuse tags consistently across days so feedback accumulates per topic. Use category-level tags rather than hyper-specific ones, so counts build up over time.
-- The wildcard item must carry the literal tag "wildcard" plus one topic tag."""
+- Every item must have 2-3 lowercase-kebab-case topic tags, chosen from the CANONICAL TAGS below. Tags drive the reader's feedback loop, so an inaccurate tag actively teaches the system the wrong thing. Only invent a new tag when nothing in the list genuinely fits, and never apply a tag from an unrelated category just because it exists (a rocket launch is not "military-modernization"; a foreign protest is not "macro-markets").
+- The wildcard item must carry the literal tag "wildcard" plus one canonical topic tag.
+
+CANONICAL TAGS, by category:
+- world: world-news, us-politics, us-policy, geopolitics, conflict, elections
+- business: macro-markets, fed-policy, equity-markets, company-news, industry-news, energy-markets, labor-market
+- technology: ai-industry, consumer-tech, software-engineering, enterprise-software, cybersecurity, tech-policy
+- science: space, astronomy, physics, biology, research
+- climate and energy: climate, energy-transition, environment, wildfire
+- health and fitness: fitness, running, nutrition, longevity, health-research
+- local: slo-county, central-coast, california, housing, water
+- defense: defense-tech, dod-strategy, defense-logistics, military-ops
+- weather: weather-forecast"""
 
 
 def build_material_message(material: dict, digest_date: str) -> str:
