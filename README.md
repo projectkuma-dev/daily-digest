@@ -1,5 +1,16 @@
 # Daily Digest
 
+## Project status: paused (2026-08-24)
+
+Brad stopped the experiment to save API tokens and free the Supabase project for
+higher-priority work. Both cron schedules are disabled (commented out, not
+deleted) in `.github/workflows/digest.yml` and `profile.yml` — the workflows
+still exist and can be run manually via `workflow_dispatch` if anyone wants to
+resume or test them. **The PWA and GitHub Pages deploy are still live**; it
+will just stop getting new digests. Supabase tables and the GitHub repo are
+left as-is unless a separate cleanup pass removes them — see the "Full teardown"
+section at the bottom of this file if that's the goal.
+
 Personalized daily digest system. A GitHub Actions cron runs a Python pipeline each weekday morning: it gathers free source material (curated RSS feeds, the National Weather Service forecast for San Luis Obispo, Yahoo Finance quotes), then Claude curates it into structured news/weather/finance JSON, stores it in Supabase, and pings your phone via ntfy. A React PWA on GitHub Pages renders the digest; swiping cards right/left records relevance feedback that is injected into future curation prompts, so the digest self-tunes. A second weekly job rewrites the interest profile from accumulated feedback.
 
 ```
@@ -100,3 +111,27 @@ npm run dev
 ```
 
 Pipeline locally: `pip install -r pipeline/requirements.txt`, set `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (and optionally `NTFY_TOPIC`), then `python pipeline/digest.py`.
+
+## Full teardown (optional — not done as of the 2026-08-24 pause)
+
+Disabling the cron (above) stops all ongoing cost. These steps are only needed
+to reclaim the Supabase project slot or delete the GitHub repo entirely — do
+them in this order, and note steps 1–2 are irreversible.
+
+1. **Drop the digest tables** from the shared running-ideas Supabase project
+   (SQL editor → paste and run):
+   ```sql
+   drop table if exists feedback cascade;
+   drop table if exists digest_items cascade;
+   drop table if exists digests cascade;
+   drop table if exists interest_profile cascade;
+   drop table if exists profile_history cascade;
+   ```
+   This does not touch `ideas_history` or anything else running-ideas owns.
+2. **Delete the GitHub repo** (`projectkuma-dev/daily-digest`) via Settings →
+   scroll to Danger Zone → Delete this repository — this also tears down the
+   GitHub Pages deployment. Irreversible.
+3. **Remove the ntfy subscription** on the phone (ntfy app → the digest topic
+   → unsubscribe) and delete the topic name from wherever it's noted.
+4. **Rotate or delete the `ANTHROPIC_API_KEY`** used for this project in the
+   Anthropic console if it isn't shared with anything else.

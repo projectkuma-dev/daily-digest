@@ -1,8 +1,8 @@
 name: Daily digest
 
 on:
-  schedule:
-    - cron: "0 13 * * 1-5" # 13:00 UTC weekdays (5/6am Pacific)
+  # Cron disabled 2026-08-24: project paused, see README "Project status".
+  # - cron: "0 13 * * 1-5" # 13:00 UTC weekdays (5/6am Pacific)
   workflow_dispatch:
 
 jobs:

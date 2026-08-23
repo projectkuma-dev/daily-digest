@@ -1,8 +1,8 @@
 name: Weekly profile rewrite
 
 on:
-  schedule:
-    - cron: "0 16 * * 0" # 16:00 UTC Sundays
+  # Cron disabled 2026-08-24: project paused, see README "Project status".
+  # - cron: "0 16 * * 0" # 16:00 UTC Sundays
   workflow_dispatch:
 
 jobs:
